@@ -197,6 +197,9 @@ if __name__ == "__main__":
     try:
         sync.sync_to_oracle(full_sync=False)  # 기존 동기화 실행
         sync.remove_excess_oracle_records()   # 초과 레코드 삭제
+    except Exception as e:
+            print(f"오류 발생: {e}")
+            exit(1)  # 비정상 종료 시 상태 코드 1 반환
     except KeyboardInterrupt:
         print("사용자에 의해 중단됨.")
     finally:
