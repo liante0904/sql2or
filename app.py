@@ -49,7 +49,8 @@ class DatabaseSync:
         query = """
             SELECT report_id, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                    ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
-                   DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP 
+                   DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, 
+                   GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL 
             FROM data_main_daily_send 
             WHERE SAVE_TIME > ?
             ORDER BY report_id
@@ -86,7 +87,7 @@ class DatabaseSync:
                        :4 AS FIRM_NM, :5 AS ATTACH_URL, :6 AS ARTICLE_TITLE, :7 AS ARTICLE_URL, 
                        :8 AS SEND_USER, :9 AS MAIN_CH_SEND_YN, :10 AS DOWNLOAD_STATUS_YN, 
                        :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, :14 AS WRITER, 
-                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP 
+                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, :18 AS GEMINI_SUMMARY, :19 AS SUMMARY_TIME, :20 AS SUMMARY_MODEL 
                 FROM dual
             ) src
             ON (dest.REPORT_ID = src.REPORT_ID)
@@ -107,15 +108,18 @@ class DatabaseSync:
                     dest.WRITER = src.WRITER,
                     dest."KEY" = src."KEY",
                     dest.TELEGRAM_URL = src.TELEGRAM_URL,
-                    dest.MKT_TP = src.MKT_TP
+                    dest.MKT_TP = src.MKT_TP,
+                    dest.GEMINI_SUMMARY = src.GEMINI_SUMMARY,
+                    dest.SUMMARY_TIME = src.SUMMARY_TIME,
+                    dest.SUMMARY_MODEL = src.SUMMARY_MODEL
             WHEN NOT MATCHED THEN
                 INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                         ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
-                        DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP)
+                        DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL)
                 VALUES (src.REPORT_ID, src.SEC_FIRM_ORDER, src.ARTICLE_BOARD_ORDER, src.FIRM_NM, 
                         src.ATTACH_URL, src.ARTICLE_TITLE, src.ARTICLE_URL, src.SEND_USER, 
                         src.MAIN_CH_SEND_YN, src.DOWNLOAD_STATUS_YN, src.DOWNLOAD_URL, 
-                        src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP)
+                        src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP, src.GEMINI_SUMMARY, src.SUMMARY_TIME, src.SUMMARY_MODEL)
         """
 
         # sqlite3.Row를 직접 사용해 파라미터 준비 최적화
@@ -137,7 +141,10 @@ class DatabaseSync:
                 row['WRITER'] or ' ',
                 row['KEY'] or ' ',
                 row['TELEGRAM_URL'] or ' ',
-                row['MKT_TP'] or ' '
+                row['MKT_TP'] or ' ',
+                row['GEMINI_SUMMARY'] or ' ',
+                row['SUMMARY_TIME'] or ' ',
+                row['SUMMARY_MODEL'] or ' '
             )
             for row in new_data
         ]
