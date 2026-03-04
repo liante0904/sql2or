@@ -17,39 +17,22 @@ SQLITE_DB_PATH = os.getenv('SQLITE_DB_PATH')
 
 class DatabaseSync:
     def __init__(self):
-        # SQLite: 단순 연결 (속도 우선)
         self.sqlite_conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
         self.sqlite_conn.row_factory = sqlite3.Row
         self.sqlite_cursor = self.sqlite_conn.cursor()
         
-        # Oracle: Thin 모드 최적화 연결
         self.oracle_conn = oracledb.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            dsn=DB_DSN,
-            config_dir=WALLET_LOCATION,
-            wallet_location=WALLET_LOCATION,
-            wallet_password=WALLET_PASSWORD
+            user=DB_USER, password=DB_PASSWORD, dsn=DB_DSN,
+            config_dir=WALLET_LOCATION, wallet_location=WALLET_LOCATION, wallet_password=WALLET_PASSWORD
         )
         self.oracle_cursor = self.oracle_conn.cursor()
         
-        # [성능 핵심 1] Oracle 인덱스 강제 확인/생성
-        # REPORT_ID에 인덱스가 없으면 MERGE 속도가 100배 이상 느려집니다.
+        # [핵심] 인덱스 확인 - 30만 건 처리에 필수
         try:
-            self.oracle_cursor.execute("""
-                DECLARE
-                    cnt NUMBER;
-                BEGIN
-                    SELECT count(*) INTO cnt FROM user_indexes WHERE table_name = 'DATA_MAIN_DAILY_SEND' AND column_name = 'REPORT_ID';
-                    IF cnt = 0 THEN
-                        EXECUTE IMMEDIATE 'CREATE INDEX IDX_REPORT_ID ON DATA_MAIN_DAILY_SEND(REPORT_ID)';
-                    END IF;
-                EXCEPTION WHEN OTHERS THEN NULL;
-                END;
-            """)
-        except: pass
+            self.oracle_cursor.execute("CREATE INDEX IDX_REPORT_ID_SYNC ON DATA_MAIN_DAILY_SEND(REPORT_ID)")
+            self.oracle_conn.commit()
+        except: pass # 이미 있으면 무시
         
-        # [성능 핵심 2] 세션 최적화
         self.oracle_cursor.execute("ALTER SESSION SET CURSOR_SHARING = FORCE")
 
     def close_connections(self):
@@ -57,19 +40,15 @@ class DatabaseSync:
         self.oracle_conn.close()
 
     def get_latest_save_time(self) -> str:
-        # Oracle MAX 조회 시 인덱스를 타도록 유도
         self.oracle_cursor.execute("SELECT MAX(SAVE_TIME) FROM DATA_MAIN_DAILY_SEND")
         res = self.oracle_cursor.fetchone()[0]
-        if res:
-            # Oracle datetime -> SQLite 문자열 포맷 (ISO8601)
-            return res.strftime('%Y-%m-%dT%H:%M:%S.%f')
-        return '1900-01-01T00:00:00.000000'
+        return res.strftime('%Y-%m-%dT%H:%M:%S.%f') if res else '1900-01-01T00:00:00.000000'
 
     def sync_to_oracle(self, full_sync: bool = False):
         last_time = '1900-01-01T00:00:00.000000' if full_sync else self.get_latest_save_time()
-        print(f"[*] 시작 기준 시간: {last_time}")
+        print(f"[*] 시작 기준: {last_time}")
 
-        # [성능 핵심 3] SQLite fetchmany로 메모리 보존하며 읽기
+        # SQLite에서 필요한 데이터만 빠르게 추출
         self.sqlite_cursor.execute("""
             SELECT report_id, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                    ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
@@ -80,41 +59,42 @@ class DatabaseSync:
             ORDER BY SAVE_TIME ASC
         """, (last_time,))
 
-        # [성능 핵심 4] 가장 빠른 MERGE SQL (Dual 제거)
+        # [핵심] 이름 기반 바인딩으로 DPY-4009 에러 해결 및 재사용성 극대화
         upsert_query = """
             MERGE INTO DATA_MAIN_DAILY_SEND dest
-            USING DUAL ON (dest.REPORT_ID = :1)
+            USING DUAL ON (dest.REPORT_ID = :rid)
             WHEN MATCHED THEN
                 UPDATE SET 
-                    SEC_FIRM_ORDER=:2, ARTICLE_BOARD_ORDER=:3, FIRM_NM=:4, ATTACH_URL=:5, 
-                    ARTICLE_TITLE=:6, ARTICLE_URL=:7, SEND_USER=:8, MAIN_CH_SEND_YN=:9, 
-                    DOWNLOAD_STATUS_YN=:10, DOWNLOAD_URL=:11, 
-                    SAVE_TIME=TO_TIMESTAMP(:12, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
-                    REG_DT=TO_TIMESTAMP(:13, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
-                    WRITER=:14, "KEY"=:15, TELEGRAM_URL=:16, MKT_TP=:17, 
-                    GEMINI_SUMMARY=:18, 
-                    SUMMARY_TIME=TO_TIMESTAMP(:19, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
-                    SUMMARY_MODEL=:20
+                    SEC_FIRM_ORDER=:sfo, ARTICLE_BOARD_ORDER=:abo, FIRM_NM=:fnm, ATTACH_URL=:aurl, 
+                    ARTICLE_TITLE=:atit, ARTICLE_URL=:artu, SEND_USER=:susr, MAIN_CH_SEND_YN=:mcy, 
+                    DOWNLOAD_STATUS_YN=:dsy, DOWNLOAD_URL=:durl, 
+                    SAVE_TIME=TO_TIMESTAMP(:stime, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
+                    REG_DT=TO_TIMESTAMP(:rdt, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
+                    WRITER=:wtr, "KEY"=:key, TELEGRAM_URL=:turl, MKT_TP=:mtp, 
+                    GEMINI_SUMMARY=:gsum, 
+                    SUMMARY_TIME=TO_TIMESTAMP(:sumt, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
+                    SUMMARY_MODEL=:summ
             WHEN NOT MATCHED THEN
                 INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                         ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
                         DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, 
                         GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL)
-                VALUES (:1, :2, :3, :4, :5, :6, :7, :8, :9, :10, :11, 
-                        TO_TIMESTAMP(:12, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
-                        TO_TIMESTAMP(:13, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
-                        :14, :15, :16, :17, :18, 
-                        TO_TIMESTAMP(:19, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), :20)
+                VALUES (:rid, :sfo, :abo, :fnm, :aurl, :atit, :artu, :susr, :mcy, :dsy, :durl, 
+                        TO_TIMESTAMP(:stime, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
+                        TO_TIMESTAMP(:rdt, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), 
+                        :wtr, :key, :turl, :mtp, :gsum, 
+                        TO_TIMESTAMP(:sumt, 'YYYY-MM-DD"T"HH24:MI:SS.FF'), :summ)
         """
 
-        # [성능 핵심 5] setinputsizes() - 대량 바인딩 최적화
+        # 데이터 타입 고정으로 바인딩 속도 향상
         self.oracle_cursor.setinputsizes(
-            None, None, None, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, 
-            oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, 
-            oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, 
-            oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, 
-            oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, 
-            oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR, oracledb.DB_TYPE_VARCHAR
+            rid=oracledb.DB_TYPE_VARCHAR, sfo=oracledb.DB_TYPE_NUMBER, abo=oracledb.DB_TYPE_NUMBER,
+            fnm=oracledb.DB_TYPE_VARCHAR, aurl=oracledb.DB_TYPE_VARCHAR, atit=oracledb.DB_TYPE_VARCHAR,
+            artu=oracledb.DB_TYPE_VARCHAR, susr=oracledb.DB_TYPE_VARCHAR, mcy=oracledb.DB_TYPE_VARCHAR,
+            dsy=oracledb.DB_TYPE_VARCHAR, durl=oracledb.DB_TYPE_VARCHAR, stime=oracledb.DB_TYPE_VARCHAR,
+            rdt=oracledb.DB_TYPE_VARCHAR, wtr=oracledb.DB_TYPE_VARCHAR, key=oracledb.DB_TYPE_VARCHAR,
+            turl=oracledb.DB_TYPE_VARCHAR, mtp=oracledb.DB_TYPE_VARCHAR, gsum=oracledb.DB_TYPE_VARCHAR,
+            sumt=oracledb.DB_TYPE_VARCHAR, summ=oracledb.DB_TYPE_VARCHAR
         )
 
         batch_size = 10000
@@ -125,20 +105,19 @@ class DatabaseSync:
             rows = self.sqlite_cursor.fetchmany(batch_size)
             if not rows: break
             
-            # [성능 핵심 6] 리스트 컴프리헨션 + 튜플 (Dict보다 월등히 빠름)
             batch_data = [
-                (
-                    r[0], r[1] or 0, r[2] or 0, 
-                    str(r[3])[:4000] if r[3] else " ", str(r[4])[:4000] if r[4] else " ",
-                    str(r[5])[:4000] if r[5] else " ", str(r[6])[:4000] if r[6] else " ",
-                    str(r[7])[:4000] if r[7] else " ", str(r[8])[:4000] if r[8] else " ",
-                    str(r[9])[:4000] if r[9] else " ", str(r[10])[:4000] if r[10] else " ",
-                    str(r[11]) if r[11] else None, str(r[12]) if r[12] else None,
-                    str(r[13])[:4000] if r[13] else " ", str(r[14])[:4000] if r[14] else " ",
-                    str(r[15])[:4000] if r[15] else " ", str(r[16])[:4000] if r[16] else " ",
-                    str(r[17])[:4000] if r[17] else " ", str(r[18]) if r[18] else None,
-                    str(r[19])[:4000] if r[19] else " "
-                ) for r in rows
+                {
+                    "rid": r[0], "sfo": r[1] or 0, "abo": r[2] or 0, 
+                    "fnm": str(r[3])[:4000] if r[3] else " ", "aurl": str(r[4])[:4000] if r[4] else " ",
+                    "atit": str(r[5])[:4000] if r[5] else " ", "artu": str(r[6])[:4000] if r[6] else " ",
+                    "susr": str(r[7])[:4000] if r[7] else " ", "mcy": str(r[8])[:4000] if r[8] else " ",
+                    "dsy": str(r[9])[:4000] if r[9] else " ", "durl": str(r[10])[:4000] if r[10] else " ",
+                    "stime": str(r[11]) if r[11] else None, "rdt": str(r[12]) if r[12] else None,
+                    "wtr": str(r[13])[:4000] if r[13] else " ", "key": str(r[14])[:4000] if r[14] else " ",
+                    "turl": str(r[15])[:4000] if r[15] else " ", "mtp": str(r[16])[:4000] if r[16] else " ",
+                    "gsum": str(r[17])[:4000] if r[17] else " ", "sumt": str(r[18]) if r[18] else None,
+                    "summ": str(r[19])[:4000] if r[19] else " "
+                } for r in rows
             ]
 
             self.oracle_cursor.executemany(upsert_query, batch_data)
