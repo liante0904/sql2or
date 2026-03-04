@@ -72,6 +72,17 @@ class DatabaseSync:
         result = cursor.fetchone()[0]
         return result if result else '1900-01-01'
 
+    def parse_dt(self, dt_str):
+        if not dt_str or str(dt_str).strip() == '':
+            return None
+        try:
+            s = str(dt_str).replace('T', ' ').replace('"', '')
+            if '.' in s:
+                return datetime.strptime(s, '%Y-%m-%d %H:%M:%S.%f')
+            return datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+        except:
+            return None
+
     def sync_to_oracle(self, full_sync: bool = False):
         sqlite_count, oracle_count = self.get_counts()
         print(f"SQLite3 레코드 수: {sqlite_count}, Oracle 레코드 수: {oracle_count}")
@@ -134,6 +145,7 @@ class DatabaseSync:
         """
 
         # 원본 구조 완벽 복구: None 처리나 복잡한 로직 없이 가장 빠르고 안정적인 or ' ' 사용 (DPY-4029 방지)
+        # 단, DATE/TIMESTAMP 컬럼(SAVE_TIME, REG_DT, SUMMARY_TIME)은 ' ' 사용 시 ORA-01840 발생하므로 parse_dt 적용
         params = [
             (
                 row['report_id'],
@@ -147,14 +159,14 @@ class DatabaseSync:
                 row['MAIN_CH_SEND_YN'] or ' ',
                 row['DOWNLOAD_STATUS_YN'] or ' ',
                 row['DOWNLOAD_URL'] or ' ',
-                row['SAVE_TIME'] or ' ',
-                row['REG_DT'] or ' ',
+                self.parse_dt(row['SAVE_TIME']),
+                self.parse_dt(row['REG_DT']),
                 row['WRITER'] or ' ',
                 row['KEY'] or ' ',
                 row['TELEGRAM_URL'] or ' ',
                 row['MKT_TP'] or ' ',
                 row['GEMINI_SUMMARY'] or ' ',
-                row['SUMMARY_TIME'] or ' ',
+                self.parse_dt(row['SUMMARY_TIME']),
                 row['SUMMARY_MODEL'] or ' '
             )
             for row in new_data
