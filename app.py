@@ -169,3 +169,34 @@ class DatabaseSync:
         except oracledb.DatabaseError as e:
             self.oracle_conn.rollback()
             print(f"동기화 중 오류: {e}")
+
+    def remove_excess_oracle_records(self):
+        self.sqlite_cursor.execute("SELECT REPORT_ID FROM data_main_daily_send")
+        sqlite_ids = set(row[0] for row in self.sqlite_cursor.fetchall())
+        self.oracle_cursor.execute("SELECT REPORT_ID FROM DATA_MAIN_DAILY_SEND")
+        oracle_ids = set(row[0] for row in self.oracle_cursor.fetchall())
+        excess_ids = oracle_ids - sqlite_ids
+        
+        if excess_ids:
+            print(f"Oracle에만 존재하는 REPORT_ID 삭제 중... ({len(excess_ids)}개)")
+            delete_query = "DELETE FROM DATA_MAIN_DAILY_SEND WHERE REPORT_ID = :rid"
+            try:
+                self.oracle_cursor.executemany(delete_query, [{"rid": rid} for rid in excess_ids])
+                self.oracle_conn.commit()
+                print("삭제 완료.")
+            except oracledb.DatabaseError as e:
+                self.oracle_conn.rollback()
+                print(f"삭제 중 오류: {e}")
+        else:
+            print("Oracle에 정리할 레코드가 없습니다.")
+
+if __name__ == "__main__":
+    sync = DatabaseSync()
+    try:
+        sync.sync_to_oracle(full_sync=False)
+        sync.remove_excess_oracle_records()
+    except Exception as e:
+        print(f"치명적 오류 발생: {e}")
+        exit(1)
+    finally:
+        sync.close_connections()
