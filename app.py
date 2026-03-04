@@ -17,9 +17,8 @@ SQLITE_DB_PATH = os.getenv('SQLITE_DB_PATH')
 
 class DatabaseSync:
     def __init__(self):
-        # 연결을 한 번만 초기화하고 재사용
         self.sqlite_conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
-        self.sqlite_conn.row_factory = sqlite3.Row  # 딕셔너리처럼 접근 가능하도록 Row 팩토리 사용
+        self.sqlite_conn.row_factory = sqlite3.Row
         self.sqlite_cursor = self.sqlite_conn.cursor()
         self.oracle_conn = oracledb.connect(
             user=DB_USER,
@@ -30,8 +29,6 @@ class DatabaseSync:
             wallet_password=WALLET_PASSWORD
         )
         self.oracle_cursor = self.oracle_conn.cursor()
-
-        # SQLite에서 SAVE_TIME에 인덱스를 추가하여 증분 쿼리 속도 향상
         self.sqlite_cursor.execute("CREATE INDEX IF NOT EXISTS idx_save_time ON data_main_daily_send (SAVE_TIME)")
 
     def close_connections(self):
@@ -63,16 +60,16 @@ class DatabaseSync:
         cursor = self.oracle_cursor if db_type == "oracle" else self.sqlite_cursor
         cursor.execute(query)
         result = cursor.fetchone()[0]
-        return result if result else '1900-01-01'
+        # 날짜 비교를 위해 ISO 포맷 기본값 유지
+        return result if result else '1900-01-01T00:00:00.000000'
 
     def sync_to_oracle(self, full_sync: bool = False):
         sqlite_count, oracle_count = self.get_counts()
         print(f"SQLite3 레코드 수: {sqlite_count}, Oracle 레코드 수: {oracle_count}")
 
-        last_oracle_time = '1900-01-01' if full_sync else self.get_latest_save_time("oracle")
+        last_oracle_time = '1900-01-01T00:00:00.000000' if full_sync else self.get_latest_save_time("oracle")
         print(f"{'전체' if full_sync else '마지막 Oracle'} SAVE_TIME: {last_oracle_time}")
 
-        # 데이터 가져오기 (전체 동기화는 동일 쿼리에 과거 타임스탬프 사용)
         new_data = self.fetch_new_sqlite_data(last_oracle_time)
         print(f"{'전체' if full_sync else '증분'} 동기화: 동기화할 레코드 수: {len(new_data)}")
 
@@ -80,14 +77,20 @@ class DatabaseSync:
             print("동기화할 데이터가 없습니다.")
             return
 
+        # 날짜 컬럼(SAVE_TIME, REG_DT, SUMMARY_TIME)에 TO_TIMESTAMP 적용 및 "T" 처리
         upsert_query = """
             MERGE INTO DATA_MAIN_DAILY_SEND dest
             USING (
                 SELECT :1 AS REPORT_ID, :2 AS SEC_FIRM_ORDER, :3 AS ARTICLE_BOARD_ORDER, 
                        :4 AS FIRM_NM, :5 AS ATTACH_URL, :6 AS ARTICLE_TITLE, :7 AS ARTICLE_URL, 
                        :8 AS SEND_USER, :9 AS MAIN_CH_SEND_YN, :10 AS DOWNLOAD_STATUS_YN, 
-                       :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, :14 AS WRITER, 
-                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, :18 AS GEMINI_SUMMARY, :19 AS SUMMARY_TIME, :20 AS SUMMARY_MODEL 
+                       :11 AS DOWNLOAD_URL, 
+                       CASE WHEN :12 IS NOT NULL THEN TO_TIMESTAMP(:12, 'YYYY-MM-DD"T"HH24:MI:SS.FF') ELSE NULL END AS SAVE_TIME, 
+                       CASE WHEN :13 IS NOT NULL THEN TO_TIMESTAMP(:13, 'YYYY-MM-DD"T"HH24:MI:SS.FF') ELSE NULL END AS REG_DT, 
+                       :14 AS WRITER, :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, 
+                       :18 AS GEMINI_SUMMARY, 
+                       CASE WHEN :19 IS NOT NULL THEN TO_TIMESTAMP(:19, 'YYYY-MM-DD"T"HH24:MI:SS.FF') ELSE NULL END AS SUMMARY_TIME, 
+                       :20 AS SUMMARY_MODEL 
                 FROM dual
             ) src
             ON (dest.REPORT_ID = src.REPORT_ID)
@@ -122,30 +125,34 @@ class DatabaseSync:
                         src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP, src.GEMINI_SUMMARY, src.SUMMARY_TIME, src.SUMMARY_MODEL)
         """
 
-        # sqlite3.Row를 직접 사용해 파라미터 준비 최적화
-        # 수정된 params 준비 부분
+        # 파라미터 보정 함수 (NOT NULL 제약조건 및 날짜 문자열 처리)
+        def clean(val, is_date=False):
+            if val is None or str(val).strip() == "":
+                return None if is_date else " " # 날짜는 NULL 허용(테이블 설정에 따라), 일반문자열은 공백
+            return str(val)
+
         params = [
             (
                 row['report_id'],
                 row['SEC_FIRM_ORDER'] if row['SEC_FIRM_ORDER'] is not None else 0,
                 row['ARTICLE_BOARD_ORDER'] if row['ARTICLE_BOARD_ORDER'] is not None else 0,
-                row['FIRM_NM'] or None,  # ' ' 대신 None
-                row['ATTACH_URL'] or None,
-                row['ARTICLE_TITLE'] or None,
-                row['ARTICLE_URL'] or None,
-                row['SEND_USER'] or None,
-                row['MAIN_CH_SEND_YN'] or None,
-                row['DOWNLOAD_STATUS_YN'] or None,
-                row['DOWNLOAD_URL'] or None,
-                row['SAVE_TIME'] or None,  # 날짜 컬럼이면 반드시 None
-                row['REG_DT'] or None,     # 날짜 컬럼이면 반드시 None
-                row['WRITER'] or None,
-                row['KEY'] or None,
-                row['TELEGRAM_URL'] or None,
-                row['MKT_TP'] or None,
-                row['GEMINI_SUMMARY'] or None,
-                row['SUMMARY_TIME'] or None, # 날짜 컬럼이면 반드시 None
-                row['SUMMARY_MODEL'] or None
+                clean(row['FIRM_NM']),
+                clean(row['ATTACH_URL']),
+                clean(row['ARTICLE_TITLE']),
+                clean(row['ARTICLE_URL']),
+                clean(row['SEND_USER']),
+                clean(row['MAIN_CH_SEND_YN']),
+                clean(row['DOWNLOAD_STATUS_YN']),
+                clean(row['DOWNLOAD_URL']),
+                clean(row['SAVE_TIME'], True),
+                clean(row['REG_DT'], True),
+                clean(row['WRITER']),
+                clean(row['KEY']),
+                clean(row['TELEGRAM_URL']),
+                clean(row['MKT_TP']),
+                clean(row['GEMINI_SUMMARY']),
+                clean(row['SUMMARY_TIME'], True),
+                clean(row['SUMMARY_MODEL'])
             )
             for row in new_data
         ]
@@ -154,70 +161,43 @@ class DatabaseSync:
             self.oracle_cursor.executemany(upsert_query, params, batcherrors=True)
             self.oracle_conn.commit()
             print("데이터 동기화 성공.")
-            for error in self.oracle_cursor.getbatcherrors():
+            errors = self.oracle_cursor.getbatcherrors()
+            for error in errors:
                 print(f"행 {error.offset}에서 오류: {error.message}")
+            
             new_sqlite_count, new_oracle_count = self.get_counts()
             print(f"동기화 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
         except oracledb.DatabaseError as e:
             self.oracle_conn.rollback()
             print(f"동기화 중 오류: {e}")
 
-    def run_periodically(self, interval_minutes: int = 60):
-        print("초기 전체 동기화 수행 중...")
-        self.sync_to_oracle(full_sync=False)
-        while False:
-            print(f"{datetime.now()}에 증분 동기화 시작")
-            self.sync_to_oracle(full_sync=False)
-            print(f"{interval_minutes}분 후 다음 동기화...")
-            time.sleep(interval_minutes * 60)
-
     def remove_excess_oracle_records(self):
-        # SQLite와 Oracle의 REPORT_ID 집합 가져오기
         self.sqlite_cursor.execute("SELECT REPORT_ID FROM data_main_daily_send")
         sqlite_ids = set(row[0] for row in self.sqlite_cursor.fetchall())
-        
         self.oracle_cursor.execute("SELECT REPORT_ID FROM DATA_MAIN_DAILY_SEND")
         oracle_ids = set(row[0] for row in self.oracle_cursor.fetchall())
-        
-        # Oracle에만 존재하는 REPORT_ID 찾기
         excess_ids = oracle_ids - sqlite_ids
         
         if excess_ids:
-            print(f"Oracle에만 존재하는 REPORT_ID: {excess_ids}")
+            print(f"Oracle에만 존재하는 REPORT_ID 삭제 중... ({len(excess_ids)}개)")
             delete_query = "DELETE FROM DATA_MAIN_DAILY_SEND WHERE REPORT_ID = :1"
             try:
                 self.oracle_cursor.executemany(delete_query, [(report_id,) for report_id in excess_ids])
                 self.oracle_conn.commit()
-                print(f"삭제 완료: {len(excess_ids)}개 레코드 삭제됨.")
-                
-                # 삭제 후 레코드 수 확인
-                new_sqlite_count, new_oracle_count = self.get_counts()
-                print(f"삭제 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
+                print("삭제 완료.")
             except oracledb.DatabaseError as e:
                 self.oracle_conn.rollback()
                 print(f"삭제 중 오류: {e}")
         else:
-            print("Oracle에 SQLite에 없는 REPORT_ID가 없습니다.")
+            print("Oracle에 정리할 레코드가 없습니다.")
 
-# 사용 예시
 if __name__ == "__main__":
     sync = DatabaseSync()
     try:
-        sync.sync_to_oracle(full_sync=False)  # 기존 동기화 실행
-        sync.remove_excess_oracle_records()   # 초과 레코드 삭제
+        sync.sync_to_oracle(full_sync=False)
+        sync.remove_excess_oracle_records()
     except Exception as e:
-            print(f"오류 발생: {e}")
-            exit(1)  # 비정상 종료 시 상태 코드 1 반환
-    except KeyboardInterrupt:
-        print("사용자에 의해 중단됨.")
+        print(f"치명적 오류 발생: {e}")
+        exit(1)
     finally:
         sync.close_connections()
-            
-# if __name__ == "__main__":
-#     sync = DatabaseSync()
-#     try:
-#         sync.run_periodically(interval_minutes=60)
-#     except KeyboardInterrupt:
-#         print("사용자에 의해 동기화 중단.")
-#     finally:
-#         sync.close_connections()
