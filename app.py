@@ -50,13 +50,18 @@ class DatabaseSync:
                    GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL 
             FROM data_main_daily_send 
             WHERE SAVE_TIME > ?
-            ORDER BY report_id
+            ORDER BY SAVE_TIME ASC, report_id ASC
         """
         self.sqlite_cursor.execute(query, (last_oracle_time,))
         return self.sqlite_cursor.fetchall()
 
     def get_latest_save_time(self, db_type: str = "oracle") -> str:
-        query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
+        # Oracle에서 조회 시 SQLite 문자열 포맷과 완벽히 일치시킴 (T 포함 및 FF6)
+        if db_type == "oracle":
+            query = "SELECT TO_CHAR(MAX(SAVE_TIME), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6') FROM data_main_daily_send"
+        else:
+            query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
+            
         cursor = self.oracle_cursor if db_type == "oracle" else self.sqlite_cursor
         cursor.execute(query)
         result = cursor.fetchone()[0]
@@ -66,17 +71,17 @@ class DatabaseSync:
         sqlite_count, oracle_count = self.get_counts()
         print(f"SQLite3 레코드 수: {sqlite_count}, Oracle 레코드 수: {oracle_count}")
 
+        # 전체 동기화 시 시간을 초기화하여 과거 누락 데이터(124개)를 모두 포함함
         last_oracle_time = '1900-01-01T00:00:00.000000' if full_sync else self.get_latest_save_time("oracle")
-        print(f"{'전체' if full_sync else '마지막 Oracle'} SAVE_TIME: {last_oracle_time}")
+        print(f"{'전체' if full_sync else '마지막 Oracle'} SAVE_TIME 기준점: {last_oracle_time}")
 
         new_data = self.fetch_new_sqlite_data(last_oracle_time)
-        print(f"{'전체' if full_sync else '증분'} 동기화: 동기화할 레코드 수: {len(new_data)}")
+        print(f"동기화 대상 레코드 수: {len(new_data)}")
 
         if not new_data:
             print("동기화할 데이터가 없습니다.")
             return
 
-        # 네임드 바인드(:변수명)를 사용하여 중복 참조 및 개수 오류 해결
         upsert_query = """
             MERGE INTO DATA_MAIN_DAILY_SEND dest
             USING (
@@ -129,7 +134,6 @@ class DatabaseSync:
                 return None if is_date else " "
             return str(val)
 
-        # 딕셔너리 리스트 형태로 파라미터 준비 (네임드 바인드 매핑)
         params = [
             {
                 "rid": row['report_id'],
@@ -157,46 +161,22 @@ class DatabaseSync:
         ]
 
         try:
-            # executemany에서 딕셔너리 리스트 사용
             self.oracle_cursor.executemany(upsert_query, params, batcherrors=True)
             self.oracle_conn.commit()
             print("데이터 동기화 성공.")
-            for error in self.oracle_cursor.getbatcherrors():
-                print(f"행 {error.offset}에서 오류: {error.message}")
             
             new_sqlite_count, new_oracle_count = self.get_counts()
-            print(f"동기화 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
+            print(f"동기화 후: SQLite3 {new_sqlite_count}, Oracle {new_oracle_count}")
         except oracledb.DatabaseError as e:
             self.oracle_conn.rollback()
             print(f"동기화 중 오류: {e}")
 
-    def remove_excess_oracle_records(self):
-        self.sqlite_cursor.execute("SELECT REPORT_ID FROM data_main_daily_send")
-        sqlite_ids = set(row[0] for row in self.sqlite_cursor.fetchall())
-        self.oracle_cursor.execute("SELECT REPORT_ID FROM DATA_MAIN_DAILY_SEND")
-        oracle_ids = set(row[0] for row in self.oracle_cursor.fetchall())
-        excess_ids = oracle_ids - sqlite_ids
-        
-        if excess_ids:
-            print(f"Oracle에만 존재하는 REPORT_ID 삭제 중... ({len(excess_ids)}개)")
-            delete_query = "DELETE FROM DATA_MAIN_DAILY_SEND WHERE REPORT_ID = :rid"
-            try:
-                self.oracle_cursor.executemany(delete_query, [{"rid": rid} for rid in excess_ids])
-                self.oracle_conn.commit()
-                print("삭제 완료.")
-            except oracledb.DatabaseError as e:
-                self.oracle_conn.rollback()
-                print(f"삭제 중 오류: {e}")
-        else:
-            print("Oracle에 정리할 레코드가 없습니다.")
-
 if __name__ == "__main__":
     sync = DatabaseSync()
     try:
-        sync.sync_to_oracle(full_sync=False)
-        sync.remove_excess_oracle_records()
-    except Exception as e:
-        print(f"치명적 오류 발생: {e}")
-        exit(1)
+        # 처음 실행 시에는 반드시 아래를 True로 바꿔서 과거 누락분(124개)을 채우세요.
+        # sync.sync_to_oracle(full_sync=True) 
+        
+        sync.sync_to_oracle(full_sync=False) # 그 다음부터는 False로 운영
     finally:
         sync.close_connections()
