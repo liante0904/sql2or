@@ -17,10 +17,10 @@ SQLITE_DB_PATH = os.getenv('SQLITE_DB_PATH')
 
 class DatabaseSync:
     def __init__(self):
-        # 연결을 한 번만 초기화하고 재사용
         self.sqlite_conn = sqlite3.connect(SQLITE_DB_PATH, check_same_thread=False)
-        self.sqlite_conn.row_factory = sqlite3.Row  # 딕셔너리처럼 접근 가능하도록 Row 팩토리 사용
+        self.sqlite_conn.row_factory = sqlite3.Row
         self.sqlite_cursor = self.sqlite_conn.cursor()
+        
         self.oracle_conn = oracledb.connect(
             user=DB_USER,
             password=DB_PASSWORD,
@@ -31,14 +31,14 @@ class DatabaseSync:
         )
         self.oracle_cursor = self.oracle_conn.cursor()
 
-        # [Truncate 대비 속도 복구] REPORT_ID 인덱스가 없으면 30초 컷이 불가능하므로 안전장치 추가
+        # [핵심] Truncate 등으로 인덱스가 삭제되었을 경우를 대비한 안전장치
+        # 이 인덱스가 있어야 30만건 MERGE가 30초 안에 끝납니다.
         try:
             self.oracle_cursor.execute("CREATE UNIQUE INDEX PK_REPORT_ID_SYNC ON DATA_MAIN_DAILY_SEND(REPORT_ID)")
             self.oracle_conn.commit()
         except:
-            pass # 이미 존재하면 무시
+            pass
 
-        # SQLite에서 SAVE_TIME에 인덱스를 추가하여 증분 쿼리 속도 향상
         self.sqlite_cursor.execute("CREATE INDEX IF NOT EXISTS idx_save_time ON data_main_daily_send (SAVE_TIME)")
 
     def close_connections(self):
@@ -79,7 +79,6 @@ class DatabaseSync:
         last_oracle_time = '1900-01-01' if full_sync else self.get_latest_save_time("oracle")
         print(f"{'전체' if full_sync else '마지막 Oracle'} SAVE_TIME: {last_oracle_time}")
 
-        # 데이터 가져오기 (전체 동기화는 동일 쿼리에 과거 타임스탬프 사용)
         start_time = time.time()
         new_data = self.fetch_new_sqlite_data(last_oracle_time)
         print(f"{'전체' if full_sync else '증분'} 동기화 대상 레코드 수: {len(new_data)}")
@@ -88,7 +87,7 @@ class DatabaseSync:
             print("동기화할 데이터가 없습니다.")
             return
 
-        # 가장 빠르고 에러(DPY-4009)가 절대 발생하지 않는 원본 구조
+        # 원본 구조 완벽 복구: dual 테이블을 사용해 파라미터 중복 바인딩(DPY-4009)을 방지
         upsert_query = """
             MERGE INTO DATA_MAIN_DAILY_SEND dest
             USING (
@@ -96,7 +95,7 @@ class DatabaseSync:
                        :4 AS FIRM_NM, :5 AS ATTACH_URL, :6 AS ARTICLE_TITLE, :7 AS ARTICLE_URL, 
                        :8 AS SEND_USER, :9 AS MAIN_CH_SEND_YN, :10 AS DOWNLOAD_STATUS_YN, 
                        :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, :14 AS WRITER, 
-                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP,
+                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, 
                        :18 AS GEMINI_SUMMARY, :19 AS SUMMARY_TIME, :20 AS SUMMARY_MODEL 
                 FROM dual
             ) src
@@ -125,45 +124,38 @@ class DatabaseSync:
             WHEN NOT MATCHED THEN
                 INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                         ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
-                        DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP,
+                        DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, 
                         GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL)
                 VALUES (src.REPORT_ID, src.SEC_FIRM_ORDER, src.ARTICLE_BOARD_ORDER, src.FIRM_NM, 
                         src.ATTACH_URL, src.ARTICLE_TITLE, src.ARTICLE_URL, src.SEND_USER, 
                         src.MAIN_CH_SEND_YN, src.DOWNLOAD_STATUS_YN, src.DOWNLOAD_URL, 
-                        src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP,
+                        src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP, 
                         src.GEMINI_SUMMARY, src.SUMMARY_TIME, src.SUMMARY_MODEL)
         """
 
-        # 날짜 컬럼은 빈 문자열 대신 None을 반환해야 Oracle에서 에러가 나지 않습니다.
-        def clean_date(val):
-            return str(val) if val and str(val).strip() else None
-
-        def clean_str(val):
-            return str(val) if val else ' '
-
-        # sqlite3.Row를 직접 사용해 파라미터 준비 최적화 (가장 빠른 Tuple 방식)
+        # 원본 구조 완벽 복구: None 처리나 복잡한 로직 없이 가장 빠르고 안정적인 or ' ' 사용 (DPY-4029 방지)
         params = [
             (
                 row['report_id'],
                 row['SEC_FIRM_ORDER'] or 0,
                 row['ARTICLE_BOARD_ORDER'] or 0,
-                clean_str(row['FIRM_NM']),
-                clean_str(row['ATTACH_URL']),
-                clean_str(row['ARTICLE_TITLE']),
-                clean_str(row['ARTICLE_URL']),
-                clean_str(row['SEND_USER']),
-                clean_str(row['MAIN_CH_SEND_YN']),
-                clean_str(row['DOWNLOAD_STATUS_YN']),
-                clean_str(row['DOWNLOAD_URL']),
-                clean_date(row['SAVE_TIME']),
-                clean_date(row['REG_DT']),
-                clean_str(row['WRITER']),
-                clean_str(row['KEY']),
-                clean_str(row['TELEGRAM_URL']),
-                clean_str(row['MKT_TP']),
-                clean_str(row['GEMINI_SUMMARY']),
-                clean_date(row['SUMMARY_TIME']),
-                clean_str(row['SUMMARY_MODEL'])
+                row['FIRM_NM'] or ' ',
+                row['ATTACH_URL'] or ' ',
+                row['ARTICLE_TITLE'] or ' ',
+                row['ARTICLE_URL'] or ' ',
+                row['SEND_USER'] or ' ',
+                row['MAIN_CH_SEND_YN'] or ' ',
+                row['DOWNLOAD_STATUS_YN'] or ' ',
+                row['DOWNLOAD_URL'] or ' ',
+                row['SAVE_TIME'] or ' ',
+                row['REG_DT'] or ' ',
+                row['WRITER'] or ' ',
+                row['KEY'] or ' ',
+                row['TELEGRAM_URL'] or ' ',
+                row['MKT_TP'] or ' ',
+                row['GEMINI_SUMMARY'] or ' ',
+                row['SUMMARY_TIME'] or ' ',
+                row['SUMMARY_MODEL'] or ' '
             )
             for row in new_data
         ]
@@ -180,24 +172,13 @@ class DatabaseSync:
             self.oracle_conn.rollback()
             print(f"동기화 중 오류: {e}")
 
-    def run_periodically(self, interval_minutes: int = 60):
-        print("초기 전체 동기화 수행 중...")
-        self.sync_to_oracle(full_sync=False)
-        while False:
-            print(f"{datetime.now()}에 증분 동기화 시작")
-            self.sync_to_oracle(full_sync=False)
-            print(f"{interval_minutes}분 후 다음 동기화...")
-            time.sleep(interval_minutes * 60)
-
     def remove_excess_oracle_records(self):
-        # SQLite와 Oracle의 REPORT_ID 집합 가져오기
         self.sqlite_cursor.execute("SELECT REPORT_ID FROM data_main_daily_send")
         sqlite_ids = set(row[0] for row in self.sqlite_cursor.fetchall())
         
         self.oracle_cursor.execute("SELECT REPORT_ID FROM DATA_MAIN_DAILY_SEND")
         oracle_ids = set(row[0] for row in self.oracle_cursor.fetchall())
         
-        # Oracle에만 존재하는 REPORT_ID 찾기
         excess_ids = oracle_ids - sqlite_ids
         
         if excess_ids:
@@ -207,8 +188,6 @@ class DatabaseSync:
                 self.oracle_cursor.executemany(delete_query, [(report_id,) for report_id in excess_ids])
                 self.oracle_conn.commit()
                 print(f"삭제 완료: {len(excess_ids)}개 레코드 삭제됨.")
-                
-                # 삭제 후 레코드 수 확인
                 new_sqlite_count, new_oracle_count = self.get_counts()
                 print(f"삭제 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
             except oracledb.DatabaseError as e:
@@ -217,16 +196,13 @@ class DatabaseSync:
         else:
             print("Oracle에 SQLite에 없는 REPORT_ID가 없습니다.")
 
-# 사용 예시
 if __name__ == "__main__":
     sync = DatabaseSync()
     try:
-        sync.sync_to_oracle(full_sync=False)  # 기존 동기화 실행
-        sync.remove_excess_oracle_records()   # 초과 레코드 삭제
+        sync.sync_to_oracle(full_sync=False)
+        sync.remove_excess_oracle_records()
     except Exception as e:
-            print(f"오류 발생: {e}")
-            exit(1)  # 비정상 종료 시 상태 코드 1 반환
-    except KeyboardInterrupt:
-        print("사용자에 의해 중단됨.")
+        print(f"오류 발생: {e}")
+        exit(1)
     finally:
         sync.close_connections()
