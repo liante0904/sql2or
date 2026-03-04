@@ -123,28 +123,29 @@ class DatabaseSync:
         """
 
         # sqlite3.Row를 직접 사용해 파라미터 준비 최적화
+        # 수정된 params 준비 부분
         params = [
             (
                 row['report_id'],
-                row['SEC_FIRM_ORDER'] or 0,
-                row['ARTICLE_BOARD_ORDER'] or 0,
-                row['FIRM_NM'] or ' ',
-                row['ATTACH_URL'] or ' ',
-                row['ARTICLE_TITLE'] or ' ',
-                row['ARTICLE_URL'] or ' ',
-                row['SEND_USER'] or ' ',
-                row['MAIN_CH_SEND_YN'] or ' ',
-                row['DOWNLOAD_STATUS_YN'] or ' ',
-                row['DOWNLOAD_URL'] or ' ',
-                row['SAVE_TIME'] or ' ',
-                row['REG_DT'] or ' ',
-                row['WRITER'] or ' ',
-                row['KEY'] or ' ',
-                row['TELEGRAM_URL'] or ' ',
-                row['MKT_TP'] or ' ',
-                row['GEMINI_SUMMARY'] or ' ',
-                row['SUMMARY_TIME'] or ' ',
-                row['SUMMARY_MODEL'] or ' '
+                row['SEC_FIRM_ORDER'] if row['SEC_FIRM_ORDER'] is not None else 0,
+                row['ARTICLE_BOARD_ORDER'] if row['ARTICLE_BOARD_ORDER'] is not None else 0,
+                row['FIRM_NM'] or None,  # ' ' 대신 None
+                row['ATTACH_URL'] or None,
+                row['ARTICLE_TITLE'] or None,
+                row['ARTICLE_URL'] or None,
+                row['SEND_USER'] or None,
+                row['MAIN_CH_SEND_YN'] or None,
+                row['DOWNLOAD_STATUS_YN'] or None,
+                row['DOWNLOAD_URL'] or None,
+                row['SAVE_TIME'] or None,  # 날짜 컬럼이면 반드시 None
+                row['REG_DT'] or None,     # 날짜 컬럼이면 반드시 None
+                row['WRITER'] or None,
+                row['KEY'] or None,
+                row['TELEGRAM_URL'] or None,
+                row['MKT_TP'] or None,
+                row['GEMINI_SUMMARY'] or None,
+                row['SUMMARY_TIME'] or None, # 날짜 컬럼이면 반드시 None
+                row['SUMMARY_MODEL'] or None
             )
             for row in new_data
         ]
