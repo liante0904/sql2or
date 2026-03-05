@@ -66,11 +66,24 @@ class DatabaseSync:
         return self.sqlite_cursor.fetchall()
 
     def get_latest_save_time(self, db_type: str = "oracle") -> str:
-        query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
+        if db_type == "oracle":
+            # Oracle 환경 설정(NLS)에 상관없이 ISO 규격으로 가져오도록 TO_CHAR 사용
+            query = "SELECT TO_CHAR(MAX(SAVE_TIME), 'YYYY-MM-DD HH24:MI:SS') FROM data_main_daily_send"
+        else:
+            query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
+
         cursor = self.oracle_cursor if db_type == "oracle" else self.sqlite_cursor
         cursor.execute(query)
         result = cursor.fetchone()[0]
-        return result if result else '1900-01-01'
+
+        if not result:
+            return '1900-01-01'
+        
+        # result가 datetime 객체로 반환되는 경우 문자열로 변환
+        if isinstance(result, datetime):
+            return result.strftime('%Y-%m-%d %H:%M:%S')
+            
+        return str(result)
 
     def parse_dt(self, dt_str):
         if not dt_str or str(dt_str).strip() == '':
