@@ -52,39 +52,25 @@ class DatabaseSync:
         oracle_count = self.oracle_cursor.fetchone()[0]
         return sqlite_count, oracle_count
 
-    def fetch_new_sqlite_data(self, last_oracle_time: str) -> List[sqlite3.Row]:
+    def fetch_new_sqlite_data(self, last_report_id: int) -> List[sqlite3.Row]:
         query = """
             SELECT report_id, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                    ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
                    DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, 
                    GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL 
             FROM data_main_daily_send 
-            WHERE SAVE_TIME > ?
+            WHERE report_id > ?
             ORDER BY report_id
         """
-        self.sqlite_cursor.execute(query, (last_oracle_time,))
+        self.sqlite_cursor.execute(query, (last_report_id,))
         return self.sqlite_cursor.fetchall()
 
-    def get_latest_save_time(self, db_type: str = "oracle") -> str:
-        if db_type == "oracle":
-            # TIMESTAMP로 캐스팅하여 fetch 시 datetime 객체로 안정적으로 수신하도록 유도
-            query = "SELECT MAX(CAST(SAVE_TIME AS TIMESTAMP)) FROM data_main_daily_send"
-        else:
-            query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
-
+    def get_latest_report_id(self, db_type: str = "oracle") -> int:
+        query = "SELECT MAX(REPORT_ID) FROM data_main_daily_send"
         cursor = self.oracle_cursor if db_type == "oracle" else self.sqlite_cursor
         cursor.execute(query)
         result = cursor.fetchone()[0]
-
-        if not result:
-            return '1900-01-01'
-        
-        # datetime 객체나 문자열 모두를 대응하기 위해 parse_dt 사용
-        parsed = self.parse_dt(result)
-        if parsed:
-            return parsed.strftime('%Y-%m-%d %H:%M:%S')
-            
-        return str(result)[:19]
+        return int(result) if result is not None else 0
 
     def parse_dt(self, dt_str):
         if not dt_str or str(dt_str).strip() in ['', 'None']:
@@ -109,11 +95,11 @@ class DatabaseSync:
         sqlite_count, oracle_count = self.get_counts()
         print(f"SQLite3 레코드 수: {sqlite_count}, Oracle 레코드 수: {oracle_count}")
 
-        last_oracle_time = '1900-01-01' if full_sync else self.get_latest_save_time("oracle")
-        print(f"{'전체' if full_sync else '마지막 Oracle'} SAVE_TIME: {last_oracle_time}")
+        last_report_id = 0 if full_sync else self.get_latest_report_id("oracle")
+        print(f"{'전체' if full_sync else '마지막 Oracle'} REPORT_ID: {last_report_id}")
 
         start_time = time.time()
-        new_data = self.fetch_new_sqlite_data(last_oracle_time)
+        new_data = self.fetch_new_sqlite_data(last_report_id)
         print(f"{'전체' if full_sync else '증분'} 동기화 대상 레코드 수: {len(new_data)}")
 
         if not new_data:
@@ -220,15 +206,6 @@ class DatabaseSync:
                 print(f"행 {error.offset}에서 오류: {error.message}")
             new_sqlite_count, new_oracle_count = self.get_counts()
             print(f"동기화 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
-        except oracledb.DatabaseError as e:
-            self.oracle_conn.rollback()
-            print(f"동기화 중 오류: {e}")
-
-            print(f"데이터 동기화 성공. (소요 시간: {time.time() - start_time:.2f}초)")
-            for error in self.oracle_cursor.getbatcherrors():
-                print(f"행 {error.offset}에서 오류: {error.message}")
-            new_sqlite_count, new_oracle_count = self.get_counts()
-            print(f"동기화 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드  수: {new_oracle_count}")
         except oracledb.DatabaseError as e:
             self.oracle_conn.rollback()
             print(f"동기화 중 오류: {e}")
