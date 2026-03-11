@@ -67,8 +67,8 @@ class DatabaseSync:
 
     def get_latest_save_time(self, db_type: str = "oracle") -> str:
         if db_type == "oracle":
-            # Oracle 환경 설정(NLS)에 상관없이 ISO 규격으로 가져오도록 TO_CHAR 사용
-            query = "SELECT TO_CHAR(MAX(SAVE_TIME), 'YYYY-MM-DD HH24:MI:SS') FROM data_main_daily_send"
+            # TO_CHAR(MAX(SAVE_TIME))에서 SAVE_TIME이 문자열일 경우 ORA-01722가 발생하므로 단순히 MAX를 가져옴
+            query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
         else:
             query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
 
@@ -83,7 +83,7 @@ class DatabaseSync:
         if isinstance(result, datetime):
             return result.strftime('%Y-%m-%d %H:%M:%S')
             
-        return str(result)
+        return str(result)[:19]
 
     def parse_dt(self, dt_str):
         if not dt_str or str(dt_str).strip() in ['', 'None']:
