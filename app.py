@@ -67,8 +67,8 @@ class DatabaseSync:
 
     def get_latest_save_time(self, db_type: str = "oracle") -> str:
         if db_type == "oracle":
-            # TO_CHAR(MAX(SAVE_TIME))에서 SAVE_TIME이 문자열일 경우 ORA-01722가 발생하므로 단순히 MAX를 가져옴
-            query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
+            # TIMESTAMP로 캐스팅하여 fetch 시 datetime 객체로 안정적으로 수신하도록 유도
+            query = "SELECT MAX(CAST(SAVE_TIME AS TIMESTAMP)) FROM data_main_daily_send"
         else:
             query = "SELECT MAX(SAVE_TIME) FROM data_main_daily_send"
 
@@ -79,20 +79,28 @@ class DatabaseSync:
         if not result:
             return '1900-01-01'
         
-        # result가 datetime 객체로 반환되는 경우 문자열로 변환
-        if isinstance(result, datetime):
-            return result.strftime('%Y-%m-%d %H:%M:%S')
+        # datetime 객체나 문자열 모두를 대응하기 위해 parse_dt 사용
+        parsed = self.parse_dt(result)
+        if parsed:
+            return parsed.strftime('%Y-%m-%d %H:%M:%S')
             
         return str(result)[:19]
 
     def parse_dt(self, dt_str):
         if not dt_str or str(dt_str).strip() in ['', 'None']:
             return None
-        dt_str = str(dt_str).replace('T', ' ').strip()
-        formats = ['%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y%m%d%H%M%S', '%Y-%m-%d', '%Y%m%d']
+        if isinstance(dt_str, datetime):
+            return dt_str
+        
+        s = str(dt_str).replace('T', ' ').strip().upper()
+        # Oracle NLS 포맷(DD-MON-RR) 및 표준 ISO 포맷 모두 지원
+        formats = [
+            '%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d', 
+            '%d-%b-%y', '%d-%b-%Y', '%Y%m%d%H%M%S', '%Y%m%d'
+        ]
         for fmt in formats:
             try:
-                return datetime.strptime(dt_str, fmt)
+                return datetime.strptime(s, fmt)
             except ValueError:
                 continue
         return None
@@ -160,7 +168,6 @@ class DatabaseSync:
 
         params_list = []
         for row in new_data:
-            # OracleManager의 get_str, get_url_val 로직 그대로 구현
             def get_str(val, max_len=None):
                 if val is None or str(val).strip() == "":
                     return None
@@ -174,16 +181,24 @@ class DatabaseSync:
                 key_val = get_str(row['KEY'], max_len)
                 return key_val if key_val else "N/A"
 
+            def get_int(val, default=0):
+                if val is None or str(val).strip() in ['', 'None']:
+                    return default
+                try:
+                    return int(float(val))
+                except:
+                    return default
+
             params_list.append({
-                "REPORT_ID": row['report_id'],
-                "SEC_FIRM_ORDER": row['SEC_FIRM_ORDER'] if row['SEC_FIRM_ORDER'] not in [None, ''] else 0,
-                "ARTICLE_BOARD_ORDER": row['ARTICLE_BOARD_ORDER'] if row['ARTICLE_BOARD_ORDER'] not in [None, ''] else 0,
+                "REPORT_ID": get_int(row['report_id']),
+                "SEC_FIRM_ORDER": get_int(row['SEC_FIRM_ORDER']),
+                "ARTICLE_BOARD_ORDER": get_int(row['ARTICLE_BOARD_ORDER']),
                 "FIRM_NM": get_str(row['FIRM_NM'], 300),
                 "SEND_USER": get_str(row['SEND_USER'], 100),
                 "MAIN_CH_SEND_YN": get_str(row['MAIN_CH_SEND_YN'], 100) or 'N',
                 "DOWNLOAD_STATUS_YN": get_str(row['DOWNLOAD_STATUS_YN'], 100),
                 "SAVE_TIME": self.parse_dt(row['SAVE_TIME']),
-                "REG_DT": get_str(row['REG_DT'], 100), # OracleManager에선 REG_DT를 문자열로 처리
+                "REG_DT": get_str(row['REG_DT'], 100),
                 "WRITER": get_str(row['WRITER'], 200),
                 "KEY": get_str(row['KEY'], 4000),
                 "MKT_TP": get_str(row['MKT_TP'], 100) or 'KR',
