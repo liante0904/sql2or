@@ -86,15 +86,16 @@ class DatabaseSync:
         return str(result)
 
     def parse_dt(self, dt_str):
-        if not dt_str or str(dt_str).strip() == '':
+        if not dt_str or str(dt_str).strip() in ['', 'None']:
             return None
-        try:
-            s = str(dt_str).replace('T', ' ').replace('"', '')
-            if '.' in s:
-                return datetime.strptime(s, '%Y-%m-%d %H:%M:%S.%f')
-            return datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
-        except:
-            return None
+        dt_str = str(dt_str).replace('T', ' ').strip()
+        formats = ['%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y%m%d%H%M%S', '%Y-%m-%d', '%Y%m%d']
+        for fmt in formats:
+            try:
+                return datetime.strptime(dt_str, fmt)
+            except ValueError:
+                continue
+        return None
 
     def sync_to_oracle(self, full_sync: bool = False):
         sqlite_count, oracle_count = self.get_counts()
@@ -111,40 +112,40 @@ class DatabaseSync:
             print("동기화할 데이터가 없습니다.")
             return
 
-        # 원본 구조 완벽 복구: dual 테이블을 사용해 파라미터 중복 바인딩(DPY-4009)을 방지
+        # NVL(src.COL, dest.COL)을 사용하여 소스 데이터가 NULL일 경우 기존 오라클 데이터를 유지함
         upsert_query = """
             MERGE INTO DATA_MAIN_DAILY_SEND dest
             USING (
                 SELECT :1 AS REPORT_ID, :2 AS SEC_FIRM_ORDER, :3 AS ARTICLE_BOARD_ORDER, 
                        :4 AS FIRM_NM, :5 AS ATTACH_URL, :6 AS ARTICLE_TITLE, :7 AS ARTICLE_URL, 
                        :8 AS SEND_USER, :9 AS MAIN_CH_SEND_YN, :10 AS DOWNLOAD_STATUS_YN, 
-                       :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, :14 AS WRITER, 
-                       :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, 
+                       :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, 
+                       :14 AS WRITER, :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, 
                        :18 AS GEMINI_SUMMARY, :19 AS SUMMARY_TIME, :20 AS SUMMARY_MODEL 
                 FROM dual
             ) src
             ON (dest.REPORT_ID = src.REPORT_ID)
             WHEN MATCHED THEN
                 UPDATE SET 
-                    dest.SEC_FIRM_ORDER = src.SEC_FIRM_ORDER,
-                    dest.ARTICLE_BOARD_ORDER = src.ARTICLE_BOARD_ORDER,
-                    dest.FIRM_NM = src.FIRM_NM,
-                    dest.ATTACH_URL = src.ATTACH_URL,
-                    dest.ARTICLE_TITLE = src.ARTICLE_TITLE,
-                    dest.ARTICLE_URL = src.ARTICLE_URL,
-                    dest.SEND_USER = src.SEND_USER,
-                    dest.MAIN_CH_SEND_YN = src.MAIN_CH_SEND_YN,
-                    dest.DOWNLOAD_STATUS_YN = src.DOWNLOAD_STATUS_YN,
-                    dest.DOWNLOAD_URL = src.DOWNLOAD_URL,
-                    dest.SAVE_TIME = src.SAVE_TIME,
-                    dest.REG_DT = src.REG_DT,
-                    dest.WRITER = src.WRITER,
-                    dest."KEY" = src."KEY",
-                    dest.TELEGRAM_URL = src.TELEGRAM_URL,
-                    dest.MKT_TP = src.MKT_TP,
-                    dest.GEMINI_SUMMARY = src.GEMINI_SUMMARY,
-                    dest.SUMMARY_TIME = src.SUMMARY_TIME,
-                    dest.SUMMARY_MODEL = src.SUMMARY_MODEL
+                    dest.SEC_FIRM_ORDER = NVL(src.SEC_FIRM_ORDER, dest.SEC_FIRM_ORDER),
+                    dest.ARTICLE_BOARD_ORDER = NVL(src.ARTICLE_BOARD_ORDER, dest.ARTICLE_BOARD_ORDER),
+                    dest.FIRM_NM = NVL(src.FIRM_NM, dest.FIRM_NM),
+                    dest.ATTACH_URL = NVL(src.ATTACH_URL, dest.ATTACH_URL),
+                    dest.ARTICLE_TITLE = NVL(src.ARTICLE_TITLE, dest.ARTICLE_TITLE),
+                    dest.ARTICLE_URL = NVL(src.ARTICLE_URL, dest.ARTICLE_URL),
+                    dest.SEND_USER = NVL(src.SEND_USER, dest.SEND_USER),
+                    dest.MAIN_CH_SEND_YN = NVL(src.MAIN_CH_SEND_YN, dest.MAIN_CH_SEND_YN),
+                    dest.DOWNLOAD_STATUS_YN = NVL(src.DOWNLOAD_STATUS_YN, dest.DOWNLOAD_STATUS_YN),
+                    dest.DOWNLOAD_URL = NVL(src.DOWNLOAD_URL, dest.DOWNLOAD_URL),
+                    dest.SAVE_TIME = NVL(src.SAVE_TIME, dest.SAVE_TIME),
+                    dest.REG_DT = NVL(src.REG_DT, dest.REG_DT),
+                    dest.WRITER = NVL(src.WRITER, dest.WRITER),
+                    dest."KEY" = NVL(src."KEY", dest."KEY"),
+                    dest.TELEGRAM_URL = NVL(src.TELEGRAM_URL, dest.TELEGRAM_URL),
+                    dest.MKT_TP = NVL(src.MKT_TP, dest.MKT_TP),
+                    dest.GEMINI_SUMMARY = NVL(src.GEMINI_SUMMARY, dest.GEMINI_SUMMARY),
+                    dest.SUMMARY_TIME = NVL(src.SUMMARY_TIME, dest.SUMMARY_TIME),
+                    dest.SUMMARY_MODEL = NVL(src.SUMMARY_MODEL, dest.SUMMARY_MODEL)
             WHEN NOT MATCHED THEN
                 INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
                         ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
@@ -157,33 +158,38 @@ class DatabaseSync:
                         src.GEMINI_SUMMARY, src.SUMMARY_TIME, src.SUMMARY_MODEL)
         """
 
-        # 원본 구조 완벽 복구: None 처리나 복잡한 로직 없이 가장 빠르고 안정적인 or ' ' 사용 (DPY-4029 방지)
-        # 단, DATE/TIMESTAMP 컬럼(SAVE_TIME, REG_DT, SUMMARY_TIME)은 ' ' 사용 시 ORA-01840 발생하므로 parse_dt 적용
-        params = [
-            (
+        params = []
+        for row in new_data:
+            def get_url_val(key):
+                val = row[key]
+                if val and str(val).strip(): return str(val)
+                tg_url = row['TELEGRAM_URL']
+                if tg_url and str(tg_url).strip(): return str(tg_url)
+                key_val = row['KEY']
+                return str(key_val) if key_val else "N/A"
+
+            params.append((
                 row['report_id'],
                 row['SEC_FIRM_ORDER'] or 0,
                 row['ARTICLE_BOARD_ORDER'] or 0,
                 row['FIRM_NM'] or ' ',
-                row['ATTACH_URL'] or ' ',
-                row['ARTICLE_TITLE'] or ' ',
-                row['ARTICLE_URL'] or ' ',
+                get_url_val('ATTACH_URL'),
+                row['ARTICLE_TITLE'] or 'No Title',
+                get_url_val('ARTICLE_URL'),
                 row['SEND_USER'] or ' ',
-                row['MAIN_CH_SEND_YN'] or ' ',
+                row['MAIN_CH_SEND_YN'] or 'N',
                 row['DOWNLOAD_STATUS_YN'] or ' ',
-                row['DOWNLOAD_URL'] or ' ',
+                get_url_val('DOWNLOAD_URL'),
                 self.parse_dt(row['SAVE_TIME']),
                 self.parse_dt(row['REG_DT']),
                 row['WRITER'] or ' ',
                 row['KEY'] or ' ',
                 row['TELEGRAM_URL'] or ' ',
-                row['MKT_TP'] or ' ',
+                row['MKT_TP'] or 'KR',
                 row['GEMINI_SUMMARY'] or ' ',
                 self.parse_dt(row['SUMMARY_TIME']),
                 row['SUMMARY_MODEL'] or ' '
-            )
-            for row in new_data
-        ]
+            ))
 
         try:
             self.oracle_cursor.executemany(upsert_query, params, batcherrors=True)
