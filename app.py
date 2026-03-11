@@ -112,88 +112,103 @@ class DatabaseSync:
             print("동기화할 데이터가 없습니다.")
             return
 
-        # NVL(src.COL, dest.COL)을 사용하여 소스 데이터가 NULL일 경우 기존 오라클 데이터를 유지함
+        # OracleManager의 _insert_sync_process MERGE 구조 그대로 적용
         upsert_query = """
-            MERGE INTO DATA_MAIN_DAILY_SEND dest
-            USING (
-                SELECT :1 AS REPORT_ID, :2 AS SEC_FIRM_ORDER, :3 AS ARTICLE_BOARD_ORDER, 
-                       :4 AS FIRM_NM, :5 AS ATTACH_URL, :6 AS ARTICLE_TITLE, :7 AS ARTICLE_URL, 
-                       :8 AS SEND_USER, :9 AS MAIN_CH_SEND_YN, :10 AS DOWNLOAD_STATUS_YN, 
-                       :11 AS DOWNLOAD_URL, :12 AS SAVE_TIME, :13 AS REG_DT, 
-                       :14 AS WRITER, :15 AS "KEY", :16 AS TELEGRAM_URL, :17 AS MKT_TP, 
-                       :18 AS GEMINI_SUMMARY, :19 AS SUMMARY_TIME, :20 AS SUMMARY_MODEL 
-                FROM dual
-            ) src
-            ON (dest.REPORT_ID = src.REPORT_ID)
-            WHEN MATCHED THEN
-                UPDATE SET 
-                    dest.SEC_FIRM_ORDER = NVL(src.SEC_FIRM_ORDER, dest.SEC_FIRM_ORDER),
-                    dest.ARTICLE_BOARD_ORDER = NVL(src.ARTICLE_BOARD_ORDER, dest.ARTICLE_BOARD_ORDER),
-                    dest.FIRM_NM = NVL(src.FIRM_NM, dest.FIRM_NM),
-                    dest.ATTACH_URL = NVL(src.ATTACH_URL, dest.ATTACH_URL),
-                    dest.ARTICLE_TITLE = NVL(src.ARTICLE_TITLE, dest.ARTICLE_TITLE),
-                    dest.ARTICLE_URL = NVL(src.ARTICLE_URL, dest.ARTICLE_URL),
-                    dest.SEND_USER = NVL(src.SEND_USER, dest.SEND_USER),
-                    dest.MAIN_CH_SEND_YN = NVL(src.MAIN_CH_SEND_YN, dest.MAIN_CH_SEND_YN),
-                    dest.DOWNLOAD_STATUS_YN = NVL(src.DOWNLOAD_STATUS_YN, dest.DOWNLOAD_STATUS_YN),
-                    dest.DOWNLOAD_URL = NVL(src.DOWNLOAD_URL, dest.DOWNLOAD_URL),
-                    dest.SAVE_TIME = NVL(src.SAVE_TIME, dest.SAVE_TIME),
-                    dest.REG_DT = NVL(src.REG_DT, dest.REG_DT),
-                    dest.WRITER = NVL(src.WRITER, dest.WRITER),
-                    dest."KEY" = NVL(src."KEY", dest."KEY"),
-                    dest.TELEGRAM_URL = NVL(src.TELEGRAM_URL, dest.TELEGRAM_URL),
-                    dest.MKT_TP = NVL(src.MKT_TP, dest.MKT_TP),
-                    dest.GEMINI_SUMMARY = NVL(src.GEMINI_SUMMARY, dest.GEMINI_SUMMARY),
-                    dest.SUMMARY_TIME = NVL(src.SUMMARY_TIME, dest.SUMMARY_TIME),
-                    dest.SUMMARY_MODEL = NVL(src.SUMMARY_MODEL, dest.SUMMARY_MODEL)
-            WHEN NOT MATCHED THEN
-                INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, ATTACH_URL, 
-                        ARTICLE_TITLE, ARTICLE_URL, SEND_USER, MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, 
-                        DOWNLOAD_URL, SAVE_TIME, REG_DT, WRITER, "KEY", TELEGRAM_URL, MKT_TP, 
-                        GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL)
-                VALUES (src.REPORT_ID, src.SEC_FIRM_ORDER, src.ARTICLE_BOARD_ORDER, src.FIRM_NM, 
-                        src.ATTACH_URL, src.ARTICLE_TITLE, src.ARTICLE_URL, src.SEND_USER, 
-                        src.MAIN_CH_SEND_YN, src.DOWNLOAD_STATUS_YN, src.DOWNLOAD_URL, 
-                        src.SAVE_TIME, src.REG_DT, src.WRITER, src."KEY", src.TELEGRAM_URL, src.MKT_TP, 
-                        src.GEMINI_SUMMARY, src.SUMMARY_TIME, src.SUMMARY_MODEL)
+        MERGE INTO DATA_MAIN_DAILY_SEND t
+        USING (SELECT :REPORT_ID as REPORT_ID, :SEC_FIRM_ORDER as SEC_FIRM_ORDER, 
+                      :ARTICLE_BOARD_ORDER as ARTICLE_BOARD_ORDER, :FIRM_NM as FIRM_NM, 
+                      :SEND_USER as SEND_USER, :MAIN_CH_SEND_YN as MAIN_CH_SEND_YN, 
+                      :DOWNLOAD_STATUS_YN as DOWNLOAD_STATUS_YN, :SAVE_TIME as SAVE_TIME,
+                      :REG_DT as REG_DT, :WRITER as WRITER, :KEY as "KEY", :MKT_TP as MKT_TP, 
+                      :ATTACH_URL as ATTACH_URL, :ARTICLE_TITLE as ARTICLE_TITLE, 
+                      :TELEGRAM_URL as TELEGRAM_URL, :ARTICLE_URL as ARTICLE_URL, 
+                      :DOWNLOAD_URL as DOWNLOAD_URL, :GEMINI_SUMMARY as GEMINI_SUMMARY,
+                      :SUMMARY_TIME as SUMMARY_TIME, :SUMMARY_MODEL as SUMMARY_MODEL
+               FROM DUAL) s
+        ON (t.REPORT_ID = s.REPORT_ID)
+        WHEN MATCHED THEN
+            UPDATE SET 
+                t.SEC_FIRM_ORDER = NVL(s.SEC_FIRM_ORDER, t.SEC_FIRM_ORDER),
+                t.ARTICLE_BOARD_ORDER = NVL(s.ARTICLE_BOARD_ORDER, t.ARTICLE_BOARD_ORDER),
+                t.FIRM_NM = NVL(s.FIRM_NM, t.FIRM_NM),
+                t.SEND_USER = NVL(s.SEND_USER, t.SEND_USER),
+                t.MAIN_CH_SEND_YN = NVL(s.MAIN_CH_SEND_YN, t.MAIN_CH_SEND_YN),
+                t.DOWNLOAD_STATUS_YN = NVL(s.DOWNLOAD_STATUS_YN, t.DOWNLOAD_STATUS_YN),
+                t.SAVE_TIME = NVL(s.SAVE_TIME, t.SAVE_TIME),
+                t.REG_DT = NVL(s.REG_DT, t.REG_DT),
+                t.WRITER = NVL(s.WRITER, t.WRITER),
+                t.KEY = NVL(s.KEY, t.KEY),
+                t.MKT_TP = NVL(s.MKT_TP, t.MKT_TP),
+                t.TELEGRAM_URL = NVL(s.TELEGRAM_URL, t.TELEGRAM_URL),
+                t.ATTACH_URL = NVL(s.ATTACH_URL, t.ATTACH_URL),
+                t.ARTICLE_TITLE = NVL(s.ARTICLE_TITLE, t.ARTICLE_TITLE),
+                t.ARTICLE_URL = NVL(s.ARTICLE_URL, t.ARTICLE_URL),
+                t.DOWNLOAD_URL = NVL(s.DOWNLOAD_URL, t.DOWNLOAD_URL),
+                t.GEMINI_SUMMARY = NVL(s.GEMINI_SUMMARY, t.GEMINI_SUMMARY),
+                t.SUMMARY_TIME = NVL(s.SUMMARY_TIME, t.SUMMARY_TIME),
+                t.SUMMARY_MODEL = NVL(s.SUMMARY_MODEL, t.SUMMARY_MODEL)
+        WHEN NOT MATCHED THEN
+            INSERT (REPORT_ID, SEC_FIRM_ORDER, ARTICLE_BOARD_ORDER, FIRM_NM, SEND_USER,
+                    MAIN_CH_SEND_YN, DOWNLOAD_STATUS_YN, SAVE_TIME, REG_DT, WRITER, 
+                    KEY, MKT_TP, ATTACH_URL, ARTICLE_TITLE, TELEGRAM_URL, 
+                    ARTICLE_URL, DOWNLOAD_URL, GEMINI_SUMMARY, SUMMARY_TIME, SUMMARY_MODEL)
+            VALUES (s.REPORT_ID, s.SEC_FIRM_ORDER, s.ARTICLE_BOARD_ORDER, s.FIRM_NM, s.SEND_USER,
+                    s.MAIN_CH_SEND_YN, s.DOWNLOAD_STATUS_YN, s.SAVE_TIME, s.REG_DT, s.WRITER, 
+                    s.KEY, s.MKT_TP, s.ATTACH_URL, s.ARTICLE_TITLE, s.TELEGRAM_URL, 
+                    s.ARTICLE_URL, s.DOWNLOAD_URL, s.GEMINI_SUMMARY, s.SUMMARY_TIME, s.SUMMARY_MODEL)
         """
 
-        params = []
+        params_list = []
         for row in new_data:
-            def get_url_val(key):
-                val = row[key]
-                if val and str(val).strip(): return str(val)
-                tg_url = row['TELEGRAM_URL']
-                if tg_url and str(tg_url).strip(): return str(tg_url)
-                key_val = row['KEY']
-                return str(key_val) if key_val else "N/A"
+            # OracleManager의 get_str, get_url_val 로직 그대로 구현
+            def get_str(val, max_len=None):
+                if val is None or str(val).strip() == "":
+                    return None
+                return str(val)[:max_len] if max_len else str(val)
 
-            params.append((
-                row['report_id'],
-                row['SEC_FIRM_ORDER'] or 0,
-                row['ARTICLE_BOARD_ORDER'] or 0,
-                row['FIRM_NM'] or ' ',
-                get_url_val('ATTACH_URL'),
-                row['ARTICLE_TITLE'] or 'No Title',
-                get_url_val('ARTICLE_URL'),
-                row['SEND_USER'] or ' ',
-                row['MAIN_CH_SEND_YN'] or 'N',
-                row['DOWNLOAD_STATUS_YN'] or ' ',
-                get_url_val('DOWNLOAD_URL'),
-                self.parse_dt(row['SAVE_TIME']),
-                self.parse_dt(row['REG_DT']),
-                row['WRITER'] or ' ',
-                row['KEY'] or ' ',
-                row['TELEGRAM_URL'] or ' ',
-                row['MKT_TP'] or 'KR',
-                row['GEMINI_SUMMARY'] or ' ',
-                self.parse_dt(row['SUMMARY_TIME']),
-                row['SUMMARY_MODEL'] or ' '
-            ))
+            def get_url_val(key, max_len=4000):
+                val = get_str(row[key], max_len)
+                if val: return val
+                tg_url = get_str(row['TELEGRAM_URL'], max_len)
+                if tg_url: return tg_url
+                key_val = get_str(row['KEY'], max_len)
+                return key_val if key_val else "N/A"
+
+            params_list.append({
+                "REPORT_ID": row['report_id'],
+                "SEC_FIRM_ORDER": row['SEC_FIRM_ORDER'] if row['SEC_FIRM_ORDER'] not in [None, ''] else 0,
+                "ARTICLE_BOARD_ORDER": row['ARTICLE_BOARD_ORDER'] if row['ARTICLE_BOARD_ORDER'] not in [None, ''] else 0,
+                "FIRM_NM": get_str(row['FIRM_NM'], 300),
+                "SEND_USER": get_str(row['SEND_USER'], 100),
+                "MAIN_CH_SEND_YN": get_str(row['MAIN_CH_SEND_YN'], 100) or 'N',
+                "DOWNLOAD_STATUS_YN": get_str(row['DOWNLOAD_STATUS_YN'], 100),
+                "SAVE_TIME": self.parse_dt(row['SAVE_TIME']),
+                "REG_DT": get_str(row['REG_DT'], 100), # OracleManager에선 REG_DT를 문자열로 처리
+                "WRITER": get_str(row['WRITER'], 200),
+                "KEY": get_str(row['KEY'], 4000),
+                "MKT_TP": get_str(row['MKT_TP'], 100) or 'KR',
+                "ATTACH_URL": get_url_val("ATTACH_URL", 4000),
+                "ARTICLE_TITLE": get_str(row['ARTICLE_TITLE'], 4000) or "No Title",
+                "TELEGRAM_URL": get_str(row['TELEGRAM_URL'], 4000),
+                "ARTICLE_URL": get_url_val("ARTICLE_URL", 4000),
+                "DOWNLOAD_URL": get_url_val("DOWNLOAD_URL", 4000),
+                "GEMINI_SUMMARY": get_str(row['GEMINI_SUMMARY'], 4000),
+                "SUMMARY_TIME": self.parse_dt(row['SUMMARY_TIME']),
+                "SUMMARY_MODEL": get_str(row['SUMMARY_MODEL'], 100)
+            })
 
         try:
-            self.oracle_cursor.executemany(upsert_query, params, batcherrors=True)
+            self.oracle_cursor.executemany(upsert_query, params_list, batcherrors=True)
             self.oracle_conn.commit()
+            print(f"데이터 동기화 성공. (소요 시간: {time.time() - start_time:.2f}초)")
+            for error in self.oracle_cursor.getbatcherrors():
+                print(f"행 {error.offset}에서 오류: {error.message}")
+            new_sqlite_count, new_oracle_count = self.get_counts()
+            print(f"동기화 후: SQLite3 레코드 수: {new_sqlite_count}, Oracle 레코드 수: {new_oracle_count}")
+        except oracledb.DatabaseError as e:
+            self.oracle_conn.rollback()
+            print(f"동기화 중 오류: {e}")
+
             print(f"데이터 동기화 성공. (소요 시간: {time.time() - start_time:.2f}초)")
             for error in self.oracle_cursor.getbatcherrors():
                 print(f"행 {error.offset}에서 오류: {error.message}")
