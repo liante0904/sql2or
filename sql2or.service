@@ -1,0 +1,16 @@
+[Unit]
+Description=Database Synchronization Service(sqlite3 to oracle)
+After=network.target
+
+[Service]
+User=ubuntu
+ExecStart=/home/ubuntu/.local/bin/uv run --project /home/ubuntu/dev/sql2or /home/ubuntu/dev/sql2or/app.py
+WorkingDirectory=/home/ubuntu/dev/sql2or
+EnvironmentFile=/home/ubuntu/dev/sql2or/.env
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
